@@ -117,7 +117,8 @@ async function extractLogoUrlFromWebsite(websiteUrl: string): Promise<string | n
 
 export async function generateLogosAction() {
   try {
-    // BATCHING: Only process 5 at a time to stay under Netlify's 30s limit
+    // Keep the batch size at 5 to prevent serverless timeouts. 
+    // The frontend loop will keep calling this until none are left.
     const websites = await prisma.websiteData.findMany({
       where: { logoStatus: "pending" },
       orderBy: { row_number: 'asc' },
@@ -125,7 +126,7 @@ export async function generateLogosAction() {
     });
 
     if (websites.length === 0) {
-      return { success: true, done: true, message: "All websites processed!" };
+      return { success: true, done: true, remaining: 0 };
     }
 
     console.log(`Processing batch of ${websites.length} websites...`);
@@ -138,17 +139,14 @@ export async function generateLogosAction() {
         const domain = urlObj.hostname.replace('www.', '');
         const cleanDomainForId = domain.replace(/\./g, '_');
 
-        // 1. Try to scrape the real logo
         let finalDownloadUrl = await extractLogoUrlFromWebsite(site.Website);
         let fallbackUsed = false;
 
-        // 2. If scrape fails or site is broken, try Clearbit
         if (!finalDownloadUrl) {
           finalDownloadUrl = `https://logo.clearbit.com/${domain}`;
           fallbackUsed = true;
         }
 
-        // 3. Download the image (with a 10s timeout)
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000);
         
@@ -158,7 +156,6 @@ export async function generateLogosAction() {
         });
         clearTimeout(timeoutId);
 
-        // 4. If Clearbit ALSO fails, generate a Text Logo using ui-avatars
         if (!imageResponse.ok && fallbackUsed) {
           const textLogoUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(domain)}&background=random&color=fff&size=512&font-size=0.4&format=png`;
           imageResponse = await fetch(textLogoUrl);
@@ -169,10 +166,9 @@ export async function generateLogosAction() {
         const arrayBuffer = await imageResponse.arrayBuffer();
         const imageBuffer = Buffer.from(arrayBuffer);
 
-        // 5. Upload to Cloudinary (Handles SVG rasterization and White BG removal)
         const cloudinaryUrl = await uploadToCloudinary(imageBuffer, cleanDomainForId);
 
-        // 6. Update Database
+        // Success: Mark as success so it isn't fetched next time
         await prisma.websiteData.update({
           where: { id: site.id },
           data: {
@@ -185,6 +181,7 @@ export async function generateLogosAction() {
       } catch (error) {
         console.error(`  -> [Failed] ${site.Website}`);
         
+        // Failure: Mark as failed so the query ignores it in the next loop
         await prisma.websiteData.update({
           where: { id: site.id },
           data: {
@@ -195,8 +192,12 @@ export async function generateLogosAction() {
       }
     }
 
-    const remaining = await prisma.websiteData.count({ where: { logoStatus: "pending" }});
-    return { success: true, done: false, remaining, message: `Batch complete. ${remaining} left.` };
+    // Count how many are left in the database
+    const remaining = await prisma.websiteData.count({ 
+      where: { logoStatus: "pending" }
+    });
+    
+    return { success: true, done: false, remaining };
 
   } catch (error: any) {
     console.error("Global Action Error:", error);
