@@ -1,65 +1,83 @@
 'use client';
 
 import { useState } from 'react';
+import { generateLogosAction } from '@/actions/processLogos';
 
 export default function Home() {
-  const [status, setStatus] = useState<'idle' | 'running' | 'done'>('idle');
-  const [message, setMessage] = useState('');
+  const [isRunning, setIsRunning] = useState(false);
+  const [progress, setProgress] = useState({ remaining: '?', message: 'Ready to start' });
 
-  const handleGenerate = async () => {
-    setStatus('running');
-    setMessage('Starting background processor...');
+  const processAll = async () => {
+    setIsRunning(true);
+    setProgress(prev => ({ ...prev, message: 'Starting engine...' }));
 
-    try {
-      const res = await fetch('/api/logo-worker', { method: 'POST' });
-      const data = await res.json();
-      
-      if (res.ok) {
-        setMessage('Background process started! You can safely close this tab or leave the page. The server will handle the rest.');
-        setStatus('done');
-      } else {
-        setMessage(`Error: ${data.error}`);
-        setStatus('idle');
+    let isDone = false;
+    
+    while (!isDone) {
+      try {
+        const result = await generateLogosAction();
+        
+        if (result.done) {
+          setProgress({ remaining: '0', message: 'All websites processed successfully!' });
+          isDone = true;
+          setIsRunning(false);
+          break;
+        }
+
+        if (!result.success) {
+          setProgress(prev => ({ ...prev, message: `Error: ${result.message}. Stopping.` }));
+          setIsRunning(false);
+          break;
+        }
+
+        setProgress({ 
+          remaining: result.remaining?.toString() || '?', 
+          message: `Processing batch... ${result.remaining} remaining.` 
+        });
+
+      } catch (err) {
+        setProgress(prev => ({ ...prev, message: 'Network error occurred. You can click start again to resume.' }));
+        setIsRunning(false);
+        break;
       }
-    } catch (error) {
-      setMessage('Network error occurred while starting the process.');
-      setStatus('idle');
     }
   };
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center p-24 bg-gray-50">
       <div className="bg-white p-8 rounded-xl shadow-sm border border-gray-100 text-center max-w-md w-full">
-        <h1 className="text-2xl font-bold text-gray-900 mb-2">Logo Extractor Engine</h1>
+        <h1 className="text-2xl font-bold text-gray-900 mb-2">Logo Extractor</h1>
         <p className="text-gray-500 mb-8 text-sm">
-          Fires a background worker on Vercel to extract, remove backgrounds, and compress logos seamlessly.
+          Extract logos, remove backgrounds (AI), and update the database.
         </p>
         
+        <div className="mb-6 p-4 bg-gray-50 rounded-lg text-left">
+          <p className="text-sm font-semibold text-gray-700">Status:</p>
+          <p className="text-sm text-blue-600">{progress.message}</p>
+          {progress.remaining !== '?' && (
+            <p className="text-xl font-bold text-gray-900 mt-2">
+              Remaining: {progress.remaining}
+            </p>
+          )}
+        </div>
+
         <button
-          onClick={handleGenerate}
-          disabled={status === 'running'}
+          onClick={processAll}
+          disabled={isRunning}
           className={`w-full py-3 px-4 rounded-lg font-medium text-white transition-all
-            ${status === 'running' 
+            ${isRunning 
               ? 'bg-blue-400 cursor-not-allowed' 
               : 'bg-blue-600 hover:bg-blue-700 active:scale-[0.98]'
             }`}
         >
-          {status === 'running' ? (
+          {isRunning ? (
             <span className="flex items-center justify-center gap-2">
-              <Spinner /> Initiating Engine...
+              <Spinner /> Running Batch...
             </span>
           ) : (
-            'Start Background Extraction'
+            'Start Auto-Extractor'
           )}
         </button>
-
-        <div className="mt-6 min-h-[60px]">
-          {message && (
-            <p className={`text-sm font-medium ${status === 'done' ? 'text-green-600' : 'text-gray-700'}`}>
-              {message}
-            </p>
-          )}
-        </div>
       </div>
     </main>
   );

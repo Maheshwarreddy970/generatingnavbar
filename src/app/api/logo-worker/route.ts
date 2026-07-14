@@ -1,298 +1,194 @@
-import { NextResponse } from 'next/server';
+'use server';
+
 import * as cheerio from 'cheerio';
 import { v2 as cloudinary } from 'cloudinary';
 import { prisma } from '@/lib/prisma';
-import sharp from 'sharp';
 import { removeBackground } from "@imgly/background-removal-node";
 
 cloudinary.config({
-  cloud_name:'dyn40clci',
-  api_key:'328476136325637',
-  api_secret:'a7MiQt_aMZfhuCe2891nUdgJDVs',
+  cloud_name: 'dyn40clci',
+  api_key: '328476136325637',
+  api_secret: 'a7MiQt_aMZfhuCe2891nUdgJDVs',
 });
 
-const BANNED_KEYWORDS = ['facebook', 'instagram', 'twitter', 'linkedin', 'tiktok', 'youtube', 'pinterest', 'google', 'placeholder', 'spinner'];
+const BANNED_KEYWORDS = ['facebook', 'instagram', 'twitter', 'linkedin', 'tiktok', 'youtube', 'pinterest', 'google', 'placeholder'];
 
-
-
-
-export async function uploadToCloudinary(
-  imageBuffer: Buffer,
-  publicId: string
-): Promise<string> {
-  // Remove background
-const blob = await removeBackground(imageBuffer);
-
-const noBg = Buffer.from(await blob.arrayBuffer());
-
-  // Resize + trim + convert to AVIF
-  const finalImage = await sharp(noBg)
-    .trim()
-    .resize(400, 400, {
-      fit: "contain",
-      background: {
-        r: 0,
-        g: 0,
-        b: 0,
-        alpha: 0,
-      },
-    })
-    .avif({
-      quality: 80,
-      effort: 6,
-    })
-    .toBuffer();
-
+async function uploadToCloudinary(buffer: Buffer, publicId: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const upload = cloudinary.uploader.upload_stream(
+    const uploadStream = cloudinary.uploader.upload_stream(
       {
-        folder: "logos",
         public_id: publicId,
-
+        folder: 'logos',
         overwrite: true,
-        invalidate: true,
-
-        resource_type: "image",
-
-        access_mode: "public",
-
-        type: "upload",
-
-        format: "avif",
-
-        unique_filename: false,
-        use_filename: true,
+        resource_type: 'auto',
       },
-      (err, result) => {
-        if (err) return reject(err);
-
-        if (!result)
-          return reject(new Error("Cloudinary upload failed"));
-
-        resolve(result.secure_url);
+      (error, result) => {
+        if (error) return reject(error);
+        if (!result) return reject(new Error("Upload failed"));
+        
+        // e_trim removes empty transparent space around the newly cropped logo
+        // f_avif optimizes it automatically
+        const optimizedUrl = result.secure_url.replace(
+          '/upload/', 
+          '/upload/e_trim/f_avif,q_auto/'
+        );
+        resolve(optimizedUrl);
       }
     );
-
-    upload.end(finalImage);
+    uploadStream.end(buffer);
   });
 }
-// ---------------------------------------------------------
-// THE NEW, HIGHLY INTELLIGENT LOGO EXTRACTOR
-// ---------------------------------------------------------
-async function extractLogoUrlFromWebsite(websiteUrl: string, domain: string): Promise<string | null> {
+
+async function extractLogoUrlFromWebsite(websiteUrl: string): Promise<string | null> {
   try {
     const secureUrl = websiteUrl.startsWith('http') ? websiteUrl : `https://${websiteUrl}`;
-    const baseUrlNoSlash = secureUrl.replace(/\/$/, '');
+    
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
 
     const response = await fetch(secureUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
       },
-      signal: AbortSignal.timeout(8000) // 8-second timeout
+      signal: controller.signal
     });
+    clearTimeout(timeoutId);
 
-    if (!response.ok) throw new Error('Failed to fetch HTML');
-    
+    if (!response.ok) return null;
+
     const html = await response.text();
     const $ = cheerio.load(html);
-    let logoUrl: string | null = null;
+    let foundSrc = '';
 
-    // Helper: Safely extract the real image URL, prioritizing data-src to beat lazy loaders
-    // imgEl can be a Cheerio element or raw any from cheerio; using any avoids TS export type issues
-    const getBestImageSrc = (imgEl: any): string | null => {
-      const dataSrc = $(imgEl).attr('data-src');
-      const src = $(imgEl).attr('src');
-      
-      let candidate = dataSrc || src;
-      
-      // If candidate is a base64 string (lazy loading placeholder), try falling back to src if data-src was the base64
-      if (candidate && candidate.startsWith('data:image')) {
-         if (src && !src.startsWith('data:image')) candidate = src;
-         else return null; // It's just a placeholder, ignore it
-      }
-      return candidate || null;
-    };
+    // STRATEGY 1: 100% Accuracy via JSON-LD (Schema.org)
+    $('script[type="application/ld+json"]').each((_, el) => {
+      try {
+        const json = JSON.parse($(el).html() || '{}');
+        if (json.logo) {
+          foundSrc = typeof json.logo === 'string' ? json.logo : json.logo.url;
+        }
+        if (json['@graph']) {
+          const org = json['@graph'].find((item: any) => item['@type'] === 'Organization');
+          if (org && org.logo) foundSrc = typeof org.logo === 'string' ? org.logo : org.logo.url;
+        }
+      } catch (e) {}
+    });
 
-    // Helper: Check if the URL is valid and not a social icon
-    const isValidLogo = (url: string | null | undefined): boolean => {
-      if (!url) return false;
-      
-      const lower = url.toLowerCase();
-      if (lower.startsWith('data:image')) return false; // Reject purely base64
-      return !BANNED_KEYWORDS.some(kw => lower.includes(kw));
-    };
-
-    // --- STRATEGY 1: The "Home Link" Pattern (Catches Wix, Weebly, Square) ---
-    // Look for <a> tags that link to "/" or "https://website.com/" and contain an image.
-    $('a').each((_, a) => {
-      const href = $(a).attr('href');
-      if (!href) return;
-      
-      const cleanHref = href.split('?')[0].replace(/\/$/, '');
-      const isHomeLink = cleanHref === '' || 
-                         cleanHref === '/' || 
-                         cleanHref === baseUrlNoSlash || 
-                         cleanHref === `http://${domain}` || 
-                         cleanHref === `https://${domain}` ||
-                         cleanHref === `http://www.${domain}` ||
-                         cleanHref === `https://www.${domain}`;
-
-      if (isHomeLink) {
-        const img = $(a).find('img').first();
-        if (img.length > 0) {
-          const src = getBestImageSrc(img[0]);
-          if (isValidLogo(src)) {
-            logoUrl = src;
-            return false; // Break loop
+    // STRATEGY 2: Common Selectors
+    if (!foundSrc) {
+      const selectors = [
+        '.site-logo img', 'a.navbar-brand img', 'header img[src*="logo" i]',
+        'img[alt*="logo" i]', 'img[class*="logo" i]', 'link[rel="apple-touch-icon"]'
+      ];
+      for (const selector of selectors) {
+        const el = $(selector).first();
+        if (el.length > 0) {
+          foundSrc = el.attr('src') || el.attr('data-src') || el.attr('href') || '';
+          if (foundSrc && !BANNED_KEYWORDS.some(kw => foundSrc.toLowerCase().includes(kw))) {
+            break; 
           }
         }
       }
-    });
-
-    if (logoUrl) return resolveUrl(logoUrl, secureUrl);
-
-    // --- STRATEGY 2: Strict Attributes & Class Names (Catches WordPress, Custom HTML) ---
-    // Look for alt="logo", class="logo", id="logo", or specific header containers
-    const targetedSelectors = [
-      'img[alt*="logo" i]',          // Image alt contains "logo" (case insensitive)
-      'img[class*="logo" i]',        // Image class contains "logo"
-      'img[id*="logo" i]',           // Image id contains "logo"
-      '.site-logo img',              // Standard WP logo class
-      '.navbar-brand img',           // Bootstrap brand image
-      'header img',                  // Any image directly in the header
-      '[class*="header"] img',       // Any image inside a container with "header" in the class
-    ];
-
-    for (const selector of targetedSelectors) {
-      $(selector).each((_, img) => {
-        const src = getBestImageSrc(img);
-        if (isValidLogo(src)) {
-          logoUrl = src;
-          return false; // Break loop
-        }
-      });
-      if (logoUrl) break;
     }
 
-    if (logoUrl) return resolveUrl(logoUrl, secureUrl);
+    if (!foundSrc) return null;
+    
+    // Resolve Absolute URL
+    if (foundSrc.startsWith('//')) return `https:${foundSrc}`;
+    if (!foundSrc.startsWith('http')) return new URL(foundSrc, secureUrl).href;
 
-    // --- STRATEGY 3: URL Contains "logo" (Catches specific filenames like AH-Fancy-Logo.png) ---
-    $('img').each((_, img) => {
-      const src = getBestImageSrc(img);
-      if (src && isValidLogo(src) && src.toLowerCase().includes('logo')) {
-        logoUrl = src;
-        return false; // Break loop
-      }
-    });
-
-    if (logoUrl) return resolveUrl(logoUrl, secureUrl);
-
-    // --- STRATEGY 4: Open Graph Metadata ---
-    const ogImage = $('meta[property="og:image"]').attr('content');
-    if (isValidLogo(ogImage)) return resolveUrl(ogImage!, secureUrl);
-
-    // If scraping completely fails, fallback to Clearbit API
-    const clearbitUrl = `https://logo.clearbit.com/${domain}?size=400`;
-    const cbCheck = await fetch(clearbitUrl, { method: 'HEAD', signal: AbortSignal.timeout(3000) });
-    if (cbCheck.ok && cbCheck.headers.get('content-type')?.includes('image')) {
-      return clearbitUrl;
-    }
-
-    // Last Resort Fallback: Google High-Res Favicon
-    return `https://www.google.com/s2/favicons?domain=${domain}&sz=256`;
-
+    return foundSrc;
   } catch (err) {
-    // If the site times out or crashes, use Clearbit/Google fallbacks
-    const clearbitUrl = `https://logo.clearbit.com/${domain}?size=400`;
-    const cbCheck = await fetch(clearbitUrl, { method: 'HEAD', signal: AbortSignal.timeout(3000) }).catch(() => null);
-    if (cbCheck?.ok) return clearbitUrl;
-    return `https://www.google.com/s2/favicons?domain=${domain}&sz=256`;
+    return null;
   }
 }
 
-// Helper function to resolve relative URLs like "/wp-content/uploads/logo.png" to absolute URLs
-function resolveUrl(rawUrl: string, baseUrl: string): string {
-  if (rawUrl.startsWith('//')) return `https:${rawUrl}`;
-  if (rawUrl.startsWith('http')) return rawUrl;
-  try {
-    return new URL(rawUrl, baseUrl).href;
-  } catch {
-    return rawUrl;
-  }
-}
-
-// ---------------------------------------------------------
-// MAIN WORKER LOGIC
-// ---------------------------------------------------------
-export async function POST(req: Request) {
+export async function generateLogosAction() {
   try {
     const websites = await prisma.websiteData.findMany({
       where: { logoStatus: "pending" },
       orderBy: { row_number: 'asc' },
-      take: 5 
+      take: 5 // Process 5 per batch
     });
 
     if (websites.length === 0) {
-      return NextResponse.json({ message: "All done!" });
+      return { success: true, done: true, message: "All websites processed!" };
     }
-
-    console.log(`Processing batch of ${websites.length}...`);
 
     for (const site of websites) {
       try {
-        const urlObj = new URL(site.Website.startsWith('http') ? site.Website : `https://${site.Website}`);
+        // Fallback safety to ensure valid URL object
+        const safeUrl = site.Website.startsWith('http') ? site.Website : `https://${site.Website}`;
+        const urlObj = new URL(safeUrl);
         const domain = urlObj.hostname.replace('www.', '');
         const cleanDomainForId = domain.replace(/\./g, '_');
 
-        const finalDownloadUrl = await extractLogoUrlFromWebsite(site.Website, domain);
+        let finalDownloadUrl = await extractLogoUrlFromWebsite(safeUrl);
+        let usedTextFallback = false;
+
+        if (!finalDownloadUrl) {
+          finalDownloadUrl = `https://logo.clearbit.com/${domain}`;
+        }
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
         
-        let imageResponse = await fetch(finalDownloadUrl!, { 
+        let imageResponse = await fetch(finalDownloadUrl, { 
           headers: { 'User-Agent': 'Mozilla/5.0' },
-          signal: AbortSignal.timeout(10000)
+          signal: controller.signal
         });
+        clearTimeout(timeoutId);
 
         if (!imageResponse.ok) {
-          const textLogoUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(domain)}&background=random&color=fff&size=400&format=png`;
-          imageResponse = await fetch(textLogoUrl);
+          finalDownloadUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(domain)}&background=random&color=fff&size=512&format=png`;
+          imageResponse = await fetch(finalDownloadUrl);
+          usedTextFallback = true;
         }
 
         const arrayBuffer = await imageResponse.arrayBuffer();
-        const imageBuffer = Buffer.from(arrayBuffer);
-        
-        // Upload to Cloudinary (Handles background removal automatically)
-        const cloudinaryUrl = await uploadToCloudinary(imageBuffer, cleanDomainForId);
+        let finalBuffer = Buffer.from(arrayBuffer);
+
+        // --- FREE AI BACKGROUND REMOVAL ---
+        // We only remove background if it's NOT the UI-Avatars text fallback
+        if (!usedTextFallback) {
+          try {
+            // Imgly requires a Blob
+            const imageBlob = new Blob([finalBuffer], { type: 'image/png' }); 
+            const transparentBlob = await removeBackground(imageBlob);
+            finalBuffer = Buffer.from(await transparentBlob.arrayBuffer());
+          } catch (bgError) {
+            console.error(`Background removal failed for ${domain}, proceeding with original image.`);
+            // Falls back to keeping the original finalBuffer if the AI fails
+          }
+        }
+
+        const cloudinaryUrl = await uploadToCloudinary(finalBuffer, cleanDomainForId);
 
         await prisma.websiteData.update({
           where: { id: site.id },
-          data: { logoUrl: cloudinaryUrl, logoStatus: "success", logoChecked: true }
+          data: {
+            logoUrl: cloudinaryUrl,
+            logoStatus: "success",
+            logoChecked: true
+          }
         });
 
       } catch (error) {
-        console.error(`Failed ${site.Website}`);
+        // THIS CATCH ensures a failed website doesn't crash the loop. It just marks it failed and moves to the next.
         await prisma.websiteData.update({
           where: { id: site.id },
-          data: { logoStatus: "failed", logoChecked: true }
+          data: {
+            logoStatus: "failed",
+            logoChecked: true
+          }
         });
       }
     }
 
-    // Trigger the next batch continuously
-    const protocol = req.headers.get('x-forwarded-proto') || 'http';
-    const host = req.headers.get('host');
-    const selfUrl = `${protocol}://${host}/api/logo-worker`;
-    
-    fetch(selfUrl, { method: 'POST' }).catch(console.error);
-    
-    await new Promise(resolve => setTimeout(resolve, 200));
-
-    return NextResponse.json({ 
-      success: true, 
-      message: "Batch processed, triggering next batch in background." 
-    });
+    const remaining = await prisma.websiteData.count({ where: { logoStatus: "pending" }});
+    return { success: true, done: false, remaining, message: `Batch complete.` };
 
   } catch (error: any) {
-    console.error("Worker Error:", error);
-    return NextResponse.json({ success: false, error: error.message }, { status: 500 });
+    return { success: false, done: false, message: error.message };
   }
 }
