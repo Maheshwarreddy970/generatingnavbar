@@ -2,9 +2,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   /* config options here */
-  experimental: {
-    serverComponentsExternalPackages: ['sharp', '@imgly/background-removal-node', 'canvas'],
-  },
+ serverExternalPackages: ['@imgly/background-removal-node'],
   reactCompiler: true,
 };
 

@@ -12,6 +12,7 @@ cloudinary.config({
 
 const BANNED_KEYWORDS = ['facebook', 'instagram', 'twitter', 'linkedin', 'tiktok', 'youtube', 'pinterest', 'google', 'placeholder'];
 
+// Replace your Cloudinary upload function in route.ts with this:
 async function uploadToCloudinary(buffer: Buffer, publicId: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const uploadStream = cloudinary.uploader.upload_stream(
@@ -25,9 +26,11 @@ async function uploadToCloudinary(buffer: Buffer, publicId: string): Promise<str
         if (error) return reject(error);
         if (!result) return reject(new Error("Upload failed"));
         
+        // e_make_transparent:15,co_white -> Automatically removes white backgrounds (perfect for logos)
+        // e_trim -> Crops out the extra transparent space
         const optimizedUrl = result.secure_url.replace(
           '/upload/', 
-          '/upload/e_trim/f_avif,q_auto/'
+          '/upload/e_make_transparent:15,co_white/e_trim/f_avif,q_auto/'
         );
         resolve(optimizedUrl);
       }
