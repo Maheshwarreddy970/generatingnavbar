@@ -10,6 +10,16 @@ cloudinary.config({
   api_secret: 'a7MiQt_aMZfhuCe2891nUdgJDVs',
 });
 
+// Helper to extract a clean name for Text Logos (e.g., "islanddogspa.com" -> "islanddogspa")
+function getCleanName(websiteUrl: string): string {
+  try {
+    const hostname = new URL(websiteUrl).hostname;
+    return hostname.replace('www.', '').split('.')[0];
+  } catch {
+    return "Logo";
+  }
+}
+
 async function uploadToCloudinary(buffer: Buffer, publicId: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const uploadStream = cloudinary.uploader.upload_stream(
@@ -18,12 +28,18 @@ async function uploadToCloudinary(buffer: Buffer, publicId: string): Promise<str
         folder: 'logos',
         overwrite: true,
         resource_type: 'image',
+        format: 'png', // FORCES SVGs to become standard images
       },
       (error, result) => {
         if (error) return reject(error);
-        if (!result) reject(new Error("Upload failed"));
-        
-        const optimizedUrl = result!.secure_url.replace('/upload/', '/upload/f_avif,q_auto/');
+        if (!result || !result.secure_url) return reject(new Error("Upload failed"));
+
+        // e_background_removal removes white space/backgrounds automatically
+        const secureUrl: string = result.secure_url;
+        const optimizedUrl = secureUrl.replace(
+          '/upload/',
+          '/upload/e_background_removal/f_png,q_auto/'
+        );
         resolve(optimizedUrl);
       }
     );
@@ -35,12 +51,14 @@ async function extractLogoUrlFromWebsite(websiteUrl: string): Promise<string | n
   try {
     const secureUrl = websiteUrl.replace('http://', 'https://');
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 12000);
+    // 60 second timeout as requested
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
 
     const response = await fetch(secureUrl, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
       },
       next: { revalidate: 0 },
       signal: controller.signal
@@ -53,16 +71,18 @@ async function extractLogoUrlFromWebsite(websiteUrl: string): Promise<string | n
     const $ = cheerio.load(html);
     let foundSrc = '';
 
+    // Expanded selectors to catch islanddogspa.com and others
     const selectors = [
-      'img[class*="logo" i]', 'img[id*="logo" i]', 'a[class*="logo" i] img',
-      'div[class*="logo" i] img', 'img[src*="logo" i]', 'img[alt*="logo" i]',
-      '.navbar-brand img', 'header img', 'a[href="/"] img'
+      'img.logo_image', 'img[class*="logo" i]', 'img[id*="logo" i]', 
+      '.logo img', '#logo img', 'a[class*="logo" i] img',
+      'header img', '.navbar-brand img', '[data-testid*="logo" i]', 
+      'img[src*="logo" i]', 'img[alt*="logo" i]'
     ];
 
     for (const selector of selectors) {
       const img = $(selector).first();
       if (img.length > 0) {
-        let src = img.attr('src');
+        let src = img.attr('src') || img.attr('data-src');
         if (src?.startsWith('/_next/image')) {
           const urlParam = new URL(src, 'http://dummy.com').searchParams.get('url');
           if (urlParam) src = urlParam;
@@ -86,45 +106,55 @@ async function extractLogoUrlFromWebsite(websiteUrl: string): Promise<string | n
 
     return foundSrc;
   } catch (err) {
-    return null;
+    return null; // Fails gracefully if site is dead or times out
   }
 }
 
-export async function generateLogosAction() {
+export async function processLogoBatch() {
   try {
-    // 1. Fetch only records that haven't been successfully processed yet
+    // 1. Process in small batches (3 at a time) to prevent 502 Bad Gateway Timeouts
+    const batchSize = 3;
     const websites = await prisma.websiteData.findMany({
-      where: {
-        logoStatus: { not: "success" }
-      },
-      orderBy: {
-        row_number: 'asc'
-      }
+      where: { logoStatus: "pending" },
+      orderBy: { row_number: 'asc' },
+      take: batchSize
     });
 
-    console.log(`Found ${websites.length} remaining websites to process in Neon DB.`);
+    if (websites.length === 0) {
+      return { success: true, done: true, message: "All logos extracted." };
+    }
 
-    for (let i = 0; i < websites.length; i++) {
-      const site = websites[i];
-      console.log(`[${i + 1}/${websites.length}] Scraping: ${site.Website}`);
+    for (const site of websites) {
+      console.log(`Scraping: ${site.Website}`);
 
       try {
         const urlObj = new URL(site.Website);
         const domain = urlObj.hostname.replace('www.', '').replace(/\./g, '_');
+        const cleanName = getCleanName(site.Website);
 
-        const directLogoUrl = await extractLogoUrlFromWebsite(site.Website);
-        const finalDownloadUrl = directLogoUrl || `https://logo.clearbit.com/${urlObj.hostname}`;
+        // Try 1: Scrape directly
+        let finalDownloadUrl = await extractLogoUrlFromWebsite(site.Website);
 
-        const imageResponse = await fetch(finalDownloadUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-        if (!imageResponse.ok) throw new Error('Download failed');
+        // Try 2: Clearbit API Fallback
+        if (!finalDownloadUrl) {
+          finalDownloadUrl = `https://logo.clearbit.com/${urlObj.hostname}`;
+        }
+
+        let imageResponse = await fetch(finalDownloadUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+
+        // Try 3: Text Logo Generation (If site is dead, Wix JS blocked, or Clearbit fails)
+        if (!imageResponse.ok) {
+          finalDownloadUrl = `https://ui-avatars.com/api/?name=${cleanName}&background=random&color=fff&size=256&font-size=0.4&format=png`;
+          imageResponse = await fetch(finalDownloadUrl);
+        }
+        
+        if (!imageResponse.ok) throw new Error('All image extraction methods failed');
         
         const arrayBuffer = await imageResponse.arrayBuffer();
         const imageBuffer = Buffer.from(arrayBuffer);
 
-        // Upload directly to Cloudinary
         const cloudinaryUrl = await uploadToCloudinary(imageBuffer, domain);
 
-        // 2. Update the specific row inside your Neon Database instantly
         await prisma.websiteData.update({
           where: { id: site.id },
           data: {
@@ -137,7 +167,6 @@ export async function generateLogosAction() {
       } catch (error) {
         console.error(`  -> [Failed] ${site.Website}`);
         
-        // Mark as failed in the database so it's tracked
         await prisma.websiteData.update({
           where: { id: site.id },
           data: {
@@ -146,12 +175,14 @@ export async function generateLogosAction() {
           }
         });
       }
-
-      // Respect rate limits with a small rest period
-      await new Promise(resolve => setTimeout(resolve, 600));
     }
 
-    return { success: true, message: "Neon database updated successfully with all logos." };
+    const remainingCount = await prisma.websiteData.count({
+      where: { logoStatus: "pending" }
+    });
+
+    return { success: true, done: false, remaining: remainingCount };
+
   } catch (error: any) {
     console.error("Global Action Error:", error);
     return { success: false, message: error.message };

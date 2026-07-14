@@ -10,7 +10,7 @@ export default function Navbar({ logoUrl ,url}: any) {
           <img
             src={logoUrl} // <-- Update this to use logoUrl
             alt="Petocare Logo"
-            className="h-11 w-40 object-contain  rounded p-1 brightness-0 dark:invert"
+            className="h-11 w-40 object-contain  rounded p-1 "
           />
         </a>
 

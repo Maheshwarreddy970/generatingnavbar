@@ -1,19 +1,19 @@
-import fs from 'fs/promises';
-import path from 'path';
 import Navbar from '@/components/Navbar';
 import ReviewButtons from '@/components/ReviewButtons';
-import { NavbarData } from '@/actions/navbarActions';
+import { prisma } from '@/lib/prisma';
 
 export default async function TestNavbarPage() {
-    // 1. Read JSON on the server side
-    const jsonPath = path.join(process.cwd(), 'src', 'data', 'test.json');
-    const fileContents = await fs.readFile(jsonPath, 'utf8');
-    const data: NavbarData[] = JSON.parse(fileContents);
-    
-    // 2. Filter out items that are already 'approved' or 'not_approved'
-    const pendingItems = data.filter(
-        (item) => item.logoStatus !== 'approved' && item.logoStatus !== 'not_approved'
-    );
+    // 1. Fetch pending items directly from PostgreSQL using Prisma
+    const pendingItems = await prisma.websiteData.findMany({
+        where: {
+            logoStatus: {
+                notIn: ['approved', 'not_approved'],
+            },
+        },
+        orderBy: {
+            row_number: 'asc', // Optional: keeps items ordered sequentially
+        },
+    });
 
     return (
         <main className="min-h-screen pb-20 bg-gray-50">
@@ -34,7 +34,7 @@ export default async function TestNavbarPage() {
                     </div>
                 ) : (
                     pendingItems.map((item) => (
-                        <div key={item.row_number} className="w-full relative flex flex-col min-h-[200px]">
+                        <div key={item.id} className="w-full relative flex flex-col min-h-[200px]">
                             {/* Background Image */}
                             <img 
                                 src='/homeimage.avif' 
@@ -42,7 +42,7 @@ export default async function TestNavbarPage() {
                                 alt="Home Background" 
                             />
                             
-                            {/* Navbar Component Content Wrapper (elevated above background via z-index if needed) */}
+                            {/* Navbar Component Content Wrapper */}
                             <div className="relative z-10 w-full flex flex-col justify-between h-full bg-black/10 backdrop-blur-sm">
                                 <Navbar logoUrl={item.logoUrl} url={item.Website} />
 
