@@ -21,7 +21,7 @@
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "rembg-node": "^2.0.2",
-    "sharp": "^0.35.3"
+    "sharp": "0.34.4"
   },
   "devDependencies": {
     "@biomejs/biome": "2.2.0",
