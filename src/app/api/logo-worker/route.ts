@@ -2,7 +2,6 @@ import { NextResponse } from 'next/server';
 import * as cheerio from 'cheerio';
 import { v2 as cloudinary } from 'cloudinary';
 import { prisma } from '@/lib/prisma';
-import { removeBackground } from "@imgly/background-removal-node";
 
 cloudinary.config({
   cloud_name: 'dyn40clci',
@@ -12,7 +11,6 @@ cloudinary.config({
 
 const BANNED_KEYWORDS = ['facebook', 'instagram', 'twitter', 'linkedin', 'tiktok', 'youtube', 'pinterest', 'google', 'placeholder'];
 
-// Replace your Cloudinary upload function in route.ts with this:
 async function uploadToCloudinary(buffer: Buffer, publicId: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const uploadStream = cloudinary.uploader.upload_stream(
@@ -26,8 +24,9 @@ async function uploadToCloudinary(buffer: Buffer, publicId: string): Promise<str
         if (error) return reject(error);
         if (!result) return reject(new Error("Upload failed"));
         
-        // e_make_transparent:15,co_white -> Automatically removes white backgrounds (perfect for logos)
-        // e_trim -> Crops out the extra transparent space
+        // Cloudinary handles the background removal instead of your Vercel server
+        // e_make_transparent:15,co_white turns white backgrounds transparent
+        // e_trim crops out the empty space
         const optimizedUrl = result.secure_url.replace(
           '/upload/', 
           '/upload/e_make_transparent:15,co_white/e_trim/f_avif,q_auto/'
@@ -100,7 +99,6 @@ async function extractLogoUrlFromWebsite(websiteUrl: string): Promise<string | n
   }
 }
 
-// THIS IS THE REQUIRED EXPORT FOR NEXT.JS API ROUTES
 export async function POST(req: Request) {
   try {
     const websites = await prisma.websiteData.findMany({
@@ -121,7 +119,6 @@ export async function POST(req: Request) {
         const cleanDomainForId = domain.replace(/\./g, '_');
 
         let finalDownloadUrl = await extractLogoUrlFromWebsite(safeUrl);
-        let usedTextFallback = false;
 
         if (!finalDownloadUrl) {
           finalDownloadUrl = `https://logo.clearbit.com/${domain}`;
@@ -139,22 +136,12 @@ export async function POST(req: Request) {
         if (!imageResponse.ok) {
           finalDownloadUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(domain)}&background=random&color=fff&size=512&format=png`;
           imageResponse = await fetch(finalDownloadUrl);
-          usedTextFallback = true;
         }
 
         const arrayBuffer = await imageResponse.arrayBuffer();
-        let finalBuffer = Buffer.from(arrayBuffer);
+        const finalBuffer = Buffer.from(arrayBuffer);
 
-        if (!usedTextFallback) {
-          try {
-            const imageBlob = new Blob([finalBuffer], { type: 'image/png' }); 
-            const transparentBlob = await removeBackground(imageBlob);
-            finalBuffer = Buffer.from(await transparentBlob.arrayBuffer());
-          } catch (bgError) {
-            console.error(`Background removal failed for ${domain}, proceeding with original image.`);
-          }
-        }
-
+        // Uploading directly to Cloudinary - Cloudinary handles the background removal
         const cloudinaryUrl = await uploadToCloudinary(finalBuffer, cleanDomainForId);
 
         await prisma.websiteData.update({
