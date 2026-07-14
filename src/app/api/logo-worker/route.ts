@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import * as cheerio from 'cheerio';
 import { v2 as cloudinary } from 'cloudinary';
 import { prisma } from '@/lib/prisma';
+import sharp from 'sharp';
+import { removeBackground } from "@imgly/background-removal-node";
 
 cloudinary.config({
   cloud_name:'dyn40clci',
@@ -11,40 +13,67 @@ cloudinary.config({
 
 const BANNED_KEYWORDS = ['facebook', 'instagram', 'twitter', 'linkedin', 'tiktok', 'youtube', 'pinterest', 'google', 'placeholder', 'spinner'];
 
-// AI Background removal and AVIF compression
-async function uploadToCloudinary(buffer: Buffer, publicId: string): Promise<string> {
+
+
+
+export async function uploadToCloudinary(
+  imageBuffer: Buffer,
+  publicId: string
+): Promise<string> {
+  // Remove background
+const blob = await removeBackground(imageBuffer);
+
+const noBg = Buffer.from(await blob.arrayBuffer());
+
+  // Resize + trim + convert to AVIF
+  const finalImage = await sharp(noBg)
+    .trim()
+    .resize(400, 400, {
+      fit: "contain",
+      background: {
+        r: 0,
+        g: 0,
+        b: 0,
+        alpha: 0,
+      },
+    })
+    .avif({
+      quality: 80,
+      effort: 6,
+    })
+    .toBuffer();
+
   return new Promise((resolve, reject) => {
-    const uploadStream = cloudinary.uploader.upload_stream(
+    const upload = cloudinary.uploader.upload_stream(
       {
+        folder: "logos",
         public_id: publicId,
-        folder: 'logos',
+
         overwrite: true,
         invalidate: true,
-        resource_type: 'image',
-        type: 'upload', // public asset, accessible by anyone with the URL
+
+        resource_type: "image",
+
+        access_mode: "public",
+
+        type: "upload",
+
+        format: "avif",
+
+        unique_filename: false,
+        use_filename: true,
       },
-      (error, result) => {
-        if (error) return reject(error);
-        if (!result) return reject(new Error('Upload failed'));
+      (err, result) => {
+        if (err) return reject(err);
 
-        const optimizedUrl = cloudinary.url(result.public_id, {
-          secure: true,
-          resource_type: 'image',
-          type: 'upload',
-          format: 'avif',
-          transformation: [
-            { effect: 'background_removal' },
-            { effect: 'trim' },
-            { width: 400, height: 400, crop: 'pad', background: 'transparent' },
-            { quality: 'auto:best' },
-          ],
-        });
+        if (!result)
+          return reject(new Error("Cloudinary upload failed"));
 
-        resolve(optimizedUrl);
+        resolve(result.secure_url);
       }
     );
 
-    uploadStream.end(buffer);
+    upload.end(finalImage);
   });
 }
 // ---------------------------------------------------------
