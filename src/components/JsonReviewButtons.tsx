@@ -1,40 +1,40 @@
 'use client';
 
 import { useTransition, useState } from 'react';
-import { updateLogoStatus } from '@/actions/navbarActions';
+import { updateJsonLogoStatus } from '@/actions/jsonNavbarActions';
 
-interface ReviewButtonsProps {
+interface JsonReviewButtonsProps {
   rowNumber: number;
   currentStatus: string;
-  onToggleBlack: (isBlack: boolean) => void; // New prop to tell the parent to turn the logo black
+  onToggleBlack: (isBlack: boolean) => void;
 }
 
-export default function ReviewButtons({ rowNumber, currentStatus, onToggleBlack }: ReviewButtonsProps) {
+export default function JsonReviewButtons({ rowNumber, currentStatus, onToggleBlack }: JsonReviewButtonsProps) {
   const [isPending, startTransition] = useTransition();
   const [isBlack, setIsBlack] = useState(false);
 
   const handleStatusUpdate = (status: string) => {
     startTransition(async () => {
-      await updateLogoStatus(rowNumber, status);
+      await updateJsonLogoStatus(rowNumber, status);
     });
   };
 
-  const toggleBlack = () => {
-    const newState = !isBlack;
-    setIsBlack(newState);
-    onToggleBlack(newState); 
+  const toggleBlackMode = () => {
+    const nextState = !isBlack;
+    setIsBlack(nextState);
+    onToggleBlack(nextState);
   };
 
   return (
     <div className="flex w-full items-center z-10 justify-between bg-white px-6 py-4 shadow-sm mb-12">
       <div className="text-sm font-medium text-gray-600">
-        Current Status: <span className="font-bold text-black">{currentStatus}</span>
+        Current Local Status: <span className="font-bold text-black uppercase">{currentStatus}</span>
       </div>
       
       <div className="flex gap-4 items-center">
-        {/* New Use Black Toggle */}
+        {/* Toggle Black State Transformation Modifier */}
         <button
-          onClick={toggleBlack}
+          onClick={toggleBlackMode}
           className={`px-4 py-2 rounded-lg font-medium transition-colors ${
             isBlack ? 'bg-gray-800 text-white' : 'bg-gray-200 text-gray-800 hover:bg-gray-300'
           }`}
@@ -42,7 +42,7 @@ export default function ReviewButtons({ rowNumber, currentStatus, onToggleBlack 
           {isBlack ? 'Revert Color' : 'Use Black'}
         </button>
 
-        {/* Conditional Approve Button */}
+        {/* Dynamic State Update Handler Selection */}
         {isBlack ? (
           <button
             onClick={() => handleStatusUpdate('approved_as_black')}

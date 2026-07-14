@@ -1,19 +1,23 @@
 [
   {
     "row_number": 2,
-    "Website": "https://solutions.yp.ca/?utm_source=Facebook&utm_medium=Social&utm_campaign=FProfile_Link&fbclid=IwY2xjawS91m1leHRuA2FlbQIxMABicmlkETFPMk9CaHRVZDRUeGZqcFRsc3J0YwZhcHBfaWQQMjIyMDM5MTc4ODIwMDg5MgABHnaYopqsOxSzAzrnuSLVRhk0G_OQXRQgiowydbI3s8vuDK7TDPgLtMhvS3KG_aem_eKCxabc3tWVRBZIjp-VE0Q"
+    "Website": "https://solutions.yp.ca/?utm_source=Facebook&utm_medium=Social&utm_campaign=FProfile_Link&fbclid=IwY2xjawS91m1leHRuA2FlbQIxMABicmlkETFPMk9CaHRVZDRUeGZqcFRsc3J0YwZhcHBfaWQQMjIyMDM5MTc4ODIwMDg5MgABHnaYopqsOxSzAzrnuSLVRhk0G_OQXRQgiowydbI3s8vuDK7TDPgLtMhvS3KG_aem_eKCxabc3tWVRBZIjp-VE0Q",
+    "logoStatus": "not_approved"
   },
   {
     "row_number": 3,
-    "Website": "http://63bde62ab68b6.site123.me/"
+    "Website": "http://63bde62ab68b6.site123.me/",
+    "logoStatus": "approved"
   },
   {
     "row_number": 4,
-    "Website": "http://allispawspetgrooming.com/"
+    "Website": "http://allispawspetgrooming.com/",
+    "logoStatus": "approved"
   },
   {
     "row_number": 5,
-    "Website": "http://allymallook.com/"
+    "Website": "http://allymallook.com/",
+    "logoStatus": "approved"
   },
   {
     "row_number": 6,
